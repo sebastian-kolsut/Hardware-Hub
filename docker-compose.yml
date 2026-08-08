@@ -1,0 +1,28 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - backend-venv:/app/.venv
+    env_file:
+      - .env
+    environment:
+      SQLITE_DB_PATH: /app/data/db.sqlite3
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    env_file:
+      - .env
+    depends_on:
+      - backend
+
+volumes:
+  backend-venv:
+  frontend-node-modules:
