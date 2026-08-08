@@ -4,12 +4,16 @@ import tempfile
 from datetime import date, timedelta
 from io import StringIO
 
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
+from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from .models import Hardware
+
+User = get_user_model()
 
 
 def run_import(payload, dry_run=False):
@@ -202,7 +206,7 @@ class ImportBehaviorTests(TestCase):
 
 
 class PublicHardwareAPITests(APITestCase):
-    """The public /api/hardware/ list must never leak records still needing review —
+    """The /api/hardware/ list must never leak records still needing review —
     those are only ever meant to be seen (and fixed) in /admin/."""
 
     def setUp(self):
@@ -214,6 +218,13 @@ class PublicHardwareAPITests(APITestCase):
             name='Flagged Laptop', brand='Dell', purchase_date=None,
             status='', external_id=2, needs_review=True, review_notes='missing purchase date',
         )
+        user = User.objects.create_user('viewer', password='viewerpass123')
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {Token.objects.create(user=user).key}')
+
+    def test_anonymous_request_is_rejected(self):
+        self.client.credentials()
+        response = self.client.get('/api/hardware/')
+        self.assertEqual(response.status_code, 401)
 
     def test_only_clean_records_are_returned(self):
         response = self.client.get('/api/hardware/')
@@ -233,3 +244,67 @@ class PublicHardwareAPITests(APITestCase):
         response = self.client.get('/api/hardware/')
         row = response.json()[0]
         self.assertEqual(row['status'], 'Available')
+
+
+class ManagementEndpointPermissionsTests(APITestCase):
+    """Create/update/delete hardware and creating user accounts are admin-only:
+    401 with no token, 403 for an authenticated non-staff user, success for staff."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user('admin', password='adminpass123', is_staff=True)
+        self.regular = User.objects.create_user('regular', password='regularpass123')
+        self.admin_token = Token.objects.create(user=self.admin).key
+        self.regular_token = Token.objects.create(user=self.regular).key
+        self.hw = Hardware.objects.create(
+            name='Old Laptop', brand='Dell', purchase_date=date(2022, 1, 1),
+            status=Hardware.Status.AVAILABLE, external_id=5,
+        )
+
+    def _hit_all_four(self):
+        return [
+            self.client.post('/api/hardware/', {'name': 'X', 'status': 'Available'}),
+            self.client.patch(f'/api/hardware/{self.hw.pk}/', {'status': 'Repair'}),
+            self.client.delete(f'/api/hardware/{self.hw.pk}/'),
+            self.client.post('/api/auth/users/', {'username': 'newperson', 'password': 'somepassword123'}),
+        ]
+
+    def test_unauthenticated_gets_401_on_all_four_endpoints(self):
+        for response in self._hit_all_four():
+            self.assertEqual(response.status_code, 401)
+
+    def test_regular_user_gets_403_on_all_four_endpoints(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.regular_token}')
+        for response in self._hit_all_four():
+            self.assertEqual(response.status_code, 403)
+
+    def test_admin_succeeds_on_all_four_endpoints(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.admin_token}')
+
+        create_response = self.client.post(
+            '/api/hardware/', {'name': 'New Laptop', 'brand': 'HP', 'status': 'Available'}
+        )
+        self.assertEqual(create_response.status_code, 201)
+        new_id = create_response.json()['id']
+
+        patch_response = self.client.patch(f'/api/hardware/{new_id}/', {'status': 'Repair'})
+        self.assertEqual(patch_response.status_code, 200)
+        self.assertEqual(patch_response.json()['status'], 'Repair')
+
+        delete_response = self.client.delete(f'/api/hardware/{new_id}/')
+        self.assertEqual(delete_response.status_code, 204)
+        self.assertFalse(Hardware.objects.filter(pk=new_id).exists())
+
+        user_response = self.client.post(
+            '/api/auth/users/', {'username': 'newperson', 'password': 'somepassword123'}
+        )
+        self.assertEqual(user_response.status_code, 201)
+        self.assertTrue(User.objects.filter(username='newperson').exists())
+        self.assertFalse(User.objects.get(username='newperson').is_staff)
+
+    def test_creating_hardware_with_missing_required_field_fails_validation(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.admin_token}')
+        response = self.client.post('/api/hardware/', {'brand': 'HP'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('name', response.json())
+        self.assertIn('status', response.json())
+        self.assertEqual(Hardware.objects.filter(brand='HP').count(), 0)

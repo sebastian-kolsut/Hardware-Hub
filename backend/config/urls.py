@@ -17,11 +17,16 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 
-from config.views import ping
-from hardware.views import HardwareListView
+from config.views import LoginView, LogoutView, MeView, UserCreateView, ping
+from hardware.views import HardwareDetailView, HardwareListView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/ping/', ping, name='ping'),
+    path('api/auth/login/', LoginView.as_view(), name='auth-login'),
+    path('api/auth/logout/', LogoutView.as_view(), name='auth-logout'),
+    path('api/auth/me/', MeView.as_view(), name='auth-me'),
+    path('api/auth/users/', UserCreateView.as_view(), name='auth-users'),
     path('api/hardware/', HardwareListView.as_view(), name='hardware-list'),
+    path('api/hardware/<int:pk>/', HardwareDetailView.as_view(), name='hardware-detail'),
 ]
