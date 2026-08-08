@@ -2,12 +2,18 @@
 import { onMounted, ref } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import HardwareDashboard from './components/HardwareDashboard.vue'
+import LoginView from './components/LoginView.vue'
+import { useAuth } from './composables/useAuth'
+import { apiUrl } from './config'
 
-const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 const status = ref('checking backend...')
 const isError = ref(false)
 
+const { isAuthenticated, isReady, username, isStaff, restoreSession, logout } = useAuth()
+
 onMounted(async () => {
+  await restoreSession()
+
   try {
     const response = await fetch(`${apiUrl}/api/ping/`)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -21,15 +27,32 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="shell">
-    <Sidebar :status-text="status" :is-error="isError" />
+  <div v-if="!isReady" class="boot-loading">Loading...</div>
+  <LoginView v-else-if="!isAuthenticated" />
+  <div v-else class="shell">
+    <Sidebar
+      :status-text="status"
+      :is-error="isError"
+      :username="username"
+      :is-staff="isStaff"
+      @logout="logout"
+    />
     <main>
-      <HardwareDashboard :api-url="apiUrl" />
+      <HardwareDashboard />
     </main>
   </div>
 </template>
 
 <style scoped>
+.boot-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+}
+
 .shell {
   display: flex;
   align-items: stretch;

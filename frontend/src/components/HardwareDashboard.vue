@@ -1,9 +1,10 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useAuth } from '../composables/useAuth'
+import { useApi } from '../composables/useApi'
 
-const props = defineProps({
-  apiUrl: { type: String, required: true },
-})
+const { isStaff } = useAuth()
+const { apiFetch } = useApi()
 
 const STATUSES = ['Available', 'In Use', 'Repair']
 
@@ -23,16 +24,25 @@ const statusFilter = ref('All')
 const sortKey = ref('name')
 const sortDir = ref('asc')
 
+function toApiFieldError(data) {
+  if (typeof data === 'string') return data
+  if (data.detail) return data.detail
+  return Object.entries(data)
+    .map(([field, messages]) => `${field}: ${Array.isArray(messages) ? messages.join(' ') : messages}`)
+    .join(' | ')
+}
+
 onMounted(async () => {
   try {
-    const response = await fetch(`${props.apiUrl}/api/hardware/`)
+    const response = await apiFetch('/api/hardware/')
+    if (response.status === 401) return // useApi already cleared the session; App.vue swaps to the login screen
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const data = await response.json()
     // API uses purchase_date; keep the rest of this component on the
     // camelCase shape it already had with the mock data.
     hardware.value = data.map((item) => ({ ...item, purchaseDate: item.purchase_date }))
   } catch (err) {
-    loadError.value = `could not load hardware from ${props.apiUrl}: ${err.message}`
+    loadError.value = `could not load hardware: ${err.message}`
   } finally {
     isLoading.value = false
   }
@@ -73,6 +83,7 @@ const filteredSorted = computed(() => {
 })
 
 function formatDate(dateStr) {
+  if (!dateStr) return '—'
   return new Date(dateStr).toLocaleDateString(undefined, {
     year: 'numeric',
     month: 'short',
@@ -87,18 +98,218 @@ function statusClass(status) {
     'status-repair': status === 'Repair',
   }
 }
+
+// --- Admin: toggle a row's status to/from Repair ---
+
+const statusUpdatingId = ref(null)
+
+async function toggleRepair(item) {
+  const nextStatus = item.status === 'Repair' ? 'Available' : 'Repair'
+  statusUpdatingId.value = item.id
+  try {
+    const response = await apiFetch(`/api/hardware/${item.id}/`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: nextStatus }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(toApiFieldError(data))
+    item.status = data.status
+  } catch (err) {
+    window.alert(`Could not update status: ${err.message}`)
+  } finally {
+    statusUpdatingId.value = null
+  }
+}
+
+// --- Admin: delete a row ---
+
+async function deleteHardware(item) {
+  if (!window.confirm(`Delete "${item.name}"? This cannot be undone.`)) return
+  try {
+    const response = await apiFetch(`/api/hardware/${item.id}/`, { method: 'DELETE' })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    hardware.value = hardware.value.filter((row) => row.id !== item.id)
+    // The edit form might be open on the row we just removed.
+    if (editingItem.value?.id === item.id) closeHardwareForm()
+  } catch (err) {
+    window.alert(`Could not delete "${item.name}": ${err.message}`)
+  }
+}
+
+// --- Admin: add/edit hardware form ---
+//
+// One form, one on-screen slot, two modes. Add and Edit both operate on the
+// same fields and hit the same serializer shape on the backend (POST vs.
+// PATCH to /api/hardware/), so a single form model plus a "what are we
+// editing, if anything" flag avoids maintaining two near-identical forms.
+// `editingItem` doubles as that flag: null means "add mode", a hardware row
+// means "edit mode for this row". Opening one mode always closes the other,
+// since the task calls for a single shared slot rather than two forms that
+// could both be open simultaneously.
+
+const isAddFormOpen = ref(false)
+const editingItem = ref(null)
+const isFormPanelOpen = computed(() => isAddFormOpen.value || editingItem.value !== null)
+
+const hardwareForm = ref({ name: '', brand: '', purchaseDate: '', status: 'Available' })
+const isSavingHardware = ref(false)
+const hardwareFormError = ref('')
+
+function openAddForm() {
+  editingItem.value = null
+  hardwareForm.value = { name: '', brand: '', purchaseDate: '', status: 'Available' }
+  hardwareFormError.value = ''
+  isAddFormOpen.value = true
+}
+
+function openEditForm(item) {
+  isAddFormOpen.value = false
+  hardwareFormError.value = ''
+  editingItem.value = item
+  hardwareForm.value = {
+    name: item.name,
+    brand: item.brand,
+    purchaseDate: item.purchaseDate || '',
+    status: item.status,
+  }
+}
+
+function closeHardwareForm() {
+  isAddFormOpen.value = false
+  editingItem.value = null
+  hardwareFormError.value = ''
+}
+
+async function handleSubmitHardwareForm() {
+  hardwareFormError.value = ''
+  isSavingHardware.value = true
+  const payload = {
+    name: hardwareForm.value.name,
+    brand: hardwareForm.value.brand,
+    purchase_date: hardwareForm.value.purchaseDate || null,
+    status: hardwareForm.value.status,
+  }
+  try {
+    const response = editingItem.value
+      ? await apiFetch(`/api/hardware/${editingItem.value.id}/`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload),
+        })
+      : await apiFetch('/api/hardware/', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        })
+    const data = await response.json()
+    if (!response.ok) throw new Error(toApiFieldError(data))
+
+    if (editingItem.value) {
+      const target = hardware.value.find((row) => row.id === editingItem.value.id)
+      if (target) Object.assign(target, { ...data, purchaseDate: data.purchase_date })
+    } else {
+      hardware.value.push({ ...data, purchaseDate: data.purchase_date })
+    }
+    closeHardwareForm()
+  } catch (err) {
+    hardwareFormError.value = err.message
+  } finally {
+    isSavingHardware.value = false
+  }
+}
+
+// --- Admin: create user account form ---
+
+const newUser = ref({ username: '', password: '', isStaff: false })
+const isCreatingUser = ref(false)
+const createUserError = ref('')
+const createUserSuccess = ref('')
+
+async function handleCreateUser() {
+  createUserError.value = ''
+  createUserSuccess.value = ''
+  isCreatingUser.value = true
+  try {
+    const response = await apiFetch('/api/auth/users/', {
+      method: 'POST',
+      body: JSON.stringify({
+        username: newUser.value.username,
+        password: newUser.value.password,
+        is_staff: newUser.value.isStaff,
+      }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(toApiFieldError(data))
+    createUserSuccess.value = `Created account for "${data.username}".`
+    newUser.value = { username: '', password: '', isStaff: false }
+  } catch (err) {
+    createUserError.value = err.message
+  } finally {
+    isCreatingUser.value = false
+  }
+}
 </script>
 
 <template>
   <section class="dashboard">
     <div class="page-header">
       <h1>Hardware List</h1>
+      <span class="mode-badge" :class="{ admin: isStaff }">
+        {{ isStaff ? 'Admin view' : 'User view' }}
+      </span>
     </div>
 
     <p v-if="isLoading" class="state-message">Loading hardware...</p>
     <p v-else-if="loadError" class="state-message error">{{ loadError }}</p>
 
     <template v-else>
+      <section v-if="isStaff" class="admin-tools">
+        <div class="admin-form">
+          <div class="form-panel-header">
+            <h2>{{ editingItem ? `Edit "${editingItem.name}"` : 'Add hardware' }}</h2>
+            <button
+              v-if="!isFormPanelOpen"
+              type="button"
+              class="admin-btn"
+              @click="openAddForm"
+            >
+              + Add hardware
+            </button>
+          </div>
+
+          <form v-if="isFormPanelOpen" @submit.prevent="handleSubmitHardwareForm">
+            <div class="form-row">
+              <input v-model.trim="hardwareForm.name" placeholder="Name" required />
+              <input v-model.trim="hardwareForm.brand" placeholder="Brand" />
+              <input v-model="hardwareForm.purchaseDate" type="date" />
+              <select v-model="hardwareForm.status">
+                <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
+              </select>
+              <button type="submit" :disabled="isSavingHardware">
+                {{ isSavingHardware ? 'Saving...' : editingItem ? 'Save' : 'Add' }}
+              </button>
+              <button type="button" class="admin-btn" @click="closeHardwareForm">Cancel</button>
+            </div>
+            <p v-if="hardwareFormError" class="form-message error">{{ hardwareFormError }}</p>
+          </form>
+        </div>
+
+        <form class="admin-form" @submit.prevent="handleCreateUser">
+          <h2>Create user account</h2>
+          <div class="form-row">
+            <input v-model.trim="newUser.username" placeholder="Username" required />
+            <input v-model="newUser.password" type="password" placeholder="Password" required />
+            <label class="checkbox-label">
+              <input v-model="newUser.isStaff" type="checkbox" />
+              Admin
+            </label>
+            <button type="submit" :disabled="isCreatingUser">
+              {{ isCreatingUser ? 'Creating...' : 'Create' }}
+            </button>
+          </div>
+          <p v-if="createUserError" class="form-message error">{{ createUserError }}</p>
+          <p v-if="createUserSuccess" class="form-message success">{{ createUserSuccess }}</p>
+        </form>
+      </section>
+
       <div class="toolbar">
         <input
           v-model="search"
@@ -137,8 +348,19 @@ function statusClass(status) {
             <td>
               <span class="status-badge" :class="statusClass(item.status)">{{ item.status }}</span>
             </td>
-            <td>
+            <td class="actions-cell">
               <button class="rent-btn" disabled title="Coming soon">Rent</button>
+              <template v-if="isStaff">
+                <button
+                  class="admin-btn"
+                  :disabled="statusUpdatingId === item.id"
+                  @click="toggleRepair(item)"
+                >
+                  {{ item.status === 'Repair' ? 'Mark Available' : 'Send to Repair' }}
+                </button>
+                <button class="admin-btn" @click="openEditForm(item)">Edit</button>
+                <button class="admin-btn danger" @click="deleteHardware(item)">Delete</button>
+              </template>
             </td>
           </tr>
           <tr v-if="filteredSorted.length === 0">
@@ -177,7 +399,7 @@ function statusClass(status) {
 .page-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 0.75rem;
   margin-bottom: 1.75rem;
 }
 
@@ -186,6 +408,118 @@ function statusClass(status) {
   font-size: 1.75rem;
   font-weight: 600;
   color: var(--text-h);
+}
+
+.mode-badge {
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.mode-badge.admin {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.admin-tools {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+}
+
+.admin-form {
+  flex: 1 1 320px;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1rem 1.1rem;
+}
+
+.admin-form h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.form-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.form-row input[type='text'],
+.form-row input:not([type]),
+.form-row input[type='password'],
+.form-row input[type='date'] {
+  flex: 1 1 120px;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  font-size: 0.88rem;
+  color: var(--text-h);
+  background: var(--bg);
+}
+
+.form-row select {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  font-size: 0.88rem;
+  color: var(--text-h);
+  background: var(--bg);
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.form-row button {
+  padding: 0.45rem 0.9rem;
+  border: none;
+  border-radius: 0.375rem;
+  background: var(--text-h);
+  color: var(--bg);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.form-row button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.form-message {
+  margin: 0.6rem 0 0;
+  font-size: 0.8rem;
+}
+
+.form-message.error {
+  color: #c0392b;
+}
+
+.form-message.success {
+  color: #15803d;
 }
 
 .toolbar {
@@ -296,6 +630,12 @@ function statusClass(status) {
   color: var(--badge-repair-fg);
 }
 
+.actions-cell {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
 .rent-btn {
   padding: 0.4rem 0.9rem;
   border: none;
@@ -306,5 +646,34 @@ function statusClass(status) {
   font-weight: 500;
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.admin-btn {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--text-h);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.admin-btn:hover {
+  border-color: var(--text-h);
+}
+
+.admin-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.admin-btn.danger {
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.4);
+}
+
+.admin-btn.danger:hover {
+  border-color: #dc2626;
 }
 </style>

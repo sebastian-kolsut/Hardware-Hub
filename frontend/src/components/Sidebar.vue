@@ -2,7 +2,11 @@
 defineProps({
   statusText: { type: String, default: '' },
   isError: { type: Boolean, default: false },
+  username: { type: String, default: '' },
+  isStaff: { type: Boolean, default: false },
 })
+
+defineEmits(['logout'])
 </script>
 
 <template>
@@ -46,8 +50,14 @@ defineProps({
     </nav>
 
     <div class="footer">
-      <span class="status-dot" :class="{ error: isError }" />
-      <span class="status-text">{{ statusText }}</span>
+      <div class="account">
+        <span class="account-name">{{ username }}<span v-if="isStaff"> (admin)</span></span>
+        <button class="logout-btn" @click="$emit('logout')">Log out</button>
+      </div>
+      <div class="status-line">
+        <span class="status-dot" :class="{ error: isError }" />
+        <span class="status-text">{{ statusText }}</span>
+      </div>
     </div>
   </aside>
 </template>
@@ -115,10 +125,48 @@ defineProps({
 .footer {
   margin-top: auto;
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.75rem;
   font-size: 0.75rem;
   color: var(--text);
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.account-name {
+  color: var(--text-h);
+  font-weight: 500;
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logout-btn {
+  flex-shrink: 0;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.logout-btn:hover {
+  color: var(--text-h);
+  border-color: var(--text-h);
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .status-dot {
