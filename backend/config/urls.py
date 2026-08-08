@@ -18,8 +18,10 @@ from django.contrib import admin
 from django.urls import path
 
 from config.views import ping
+from hardware.views import HardwareListView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/ping/', ping, name='ping'),
+    path('api/hardware/', HardwareListView.as_view(), name='hardware-list'),
 ]

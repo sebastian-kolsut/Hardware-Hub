@@ -7,6 +7,7 @@ from io import StringIO
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
+from rest_framework.test import APITestCase
 
 from .models import Hardware
 
@@ -198,3 +199,37 @@ class ImportBehaviorTests(TestCase):
         run_import([{'id': 2, 'name': 'Second run', 'brand': 'B', 'purchaseDate': '2022-01-01', 'status': 'Available'}])
         self.assertEqual(Hardware.objects.count(), 1)
         self.assertEqual(Hardware.objects.get().name, 'Second run')
+
+
+class PublicHardwareAPITests(APITestCase):
+    """The public /api/hardware/ list must never leak records still needing review —
+    those are only ever meant to be seen (and fixed) in /admin/."""
+
+    def setUp(self):
+        self.clean = Hardware.objects.create(
+            name='Clean Laptop', brand='Dell', purchase_date=date(2022, 1, 1),
+            status=Hardware.Status.AVAILABLE, external_id=1,
+        )
+        self.flagged = Hardware.objects.create(
+            name='Flagged Laptop', brand='Dell', purchase_date=None,
+            status='', external_id=2, needs_review=True, review_notes='missing purchase date',
+        )
+
+    def test_only_clean_records_are_returned(self):
+        response = self.client.get('/api/hardware/')
+        self.assertEqual(response.status_code, 200)
+        names = {row['name'] for row in response.json()}
+        self.assertIn('Clean Laptop', names)
+        self.assertNotIn('Flagged Laptop', names)
+
+    def test_flagged_only_fields_are_not_exposed(self):
+        response = self.client.get('/api/hardware/')
+        row = response.json()[0]
+        self.assertNotIn('needs_review', row)
+        self.assertNotIn('review_notes', row)
+        self.assertNotIn('external_id', row)
+
+    def test_status_is_returned_as_a_human_readable_label(self):
+        response = self.client.get('/api/hardware/')
+        row = response.json()[0]
+        self.assertEqual(row['status'], 'Available')

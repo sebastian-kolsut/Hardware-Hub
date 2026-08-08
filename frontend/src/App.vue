@@ -1,53 +1,45 @@
 <script setup>
 import { onMounted, ref } from 'vue'
+import Sidebar from './components/Sidebar.vue'
 import HardwareDashboard from './components/HardwareDashboard.vue'
 
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
-const status = ref('checking...')
+const status = ref('checking backend...')
 const isError = ref(false)
 
 onMounted(async () => {
   try {
     const response = await fetch(`${apiUrl}/api/ping/`)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const data = await response.json()
-    status.value = `backend says: ${data.status}`
+    await response.json()
+    status.value = 'backend connected'
   } catch (err) {
     isError.value = true
-    status.value = `could not reach backend at ${apiUrl} (${err.message})`
+    status.value = `backend unreachable (${err.message})`
   }
 })
 </script>
 
 <template>
-  <main>
-    <header>
-      <h1>Hardware Hub</h1>
-      <p class="backend-status" :class="{ error: isError }">{{ status }}</p>
-    </header>
-    <HardwareDashboard />
-  </main>
+  <div class="shell">
+    <Sidebar :status-text="status" :is-error="isError" />
+    <main>
+      <HardwareDashboard :api-url="apiUrl" />
+    </main>
+  </div>
 </template>
 
 <style scoped>
-main {
+.shell {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
   font-family: system-ui, sans-serif;
-  max-width: 60rem;
-  margin: 3rem auto;
-  padding: 0 1.5rem;
 }
 
-header {
-  text-align: center;
-  margin-bottom: 2rem;
-}
-
-.backend-status {
-  font-size: 0.85rem;
-  color: #888;
-}
-
-.backend-status.error {
-  color: #c0392b;
+main {
+  flex: 1;
+  min-width: 0;
+  padding: 2.5rem 3rem;
 }
 </style>
