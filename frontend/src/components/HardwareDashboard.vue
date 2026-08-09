@@ -99,6 +99,16 @@ function statusClass(status) {
   }
 }
 
+// The API only ever sends item.rented_by when the viewer is entitled to see
+// it (admin or the renter themselves) — a regular user viewing someone
+// else's rental gets null here, so there's nothing to accidentally render.
+function renterLabel(item) {
+  if (item.status !== 'In Use') return ''
+  if (item.rented_by_me) return 'Rented by you'
+  if (isStaff.value && item.rented_by) return `Rented by ${item.rented_by}`
+  return ''
+}
+
 // --- Rent / return (any authenticated user) ---
 
 const rentingId = ref(null)
@@ -390,6 +400,7 @@ async function handleCreateUser() {
             <td>{{ formatDate(item.purchaseDate) }}</td>
             <td>
               <span class="status-badge" :class="statusClass(item.status)">{{ item.status }}</span>
+              <span v-if="renterLabel(item)" class="renter-label">{{ renterLabel(item) }}</span>
             </td>
             <td class="actions-cell">
               <button
@@ -694,6 +705,13 @@ async function handleCreateUser() {
 .status-repair {
   background: var(--badge-repair-bg);
   color: var(--badge-repair-fg);
+}
+
+.renter-label {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--text);
 }
 
 .actions-cell {
