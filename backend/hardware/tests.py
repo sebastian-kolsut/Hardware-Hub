@@ -307,4 +307,125 @@ class ManagementEndpointPermissionsTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('name', response.json())
         self.assertIn('status', response.json())
+
+
+class RentReturnTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user('rr_admin', password='adminpass123', is_staff=True)
+        self.renter = User.objects.create_user('rr_renter', password='renterpass123')
+        self.other = User.objects.create_user('rr_other', password='otherpass123')
+
+        self.available = Hardware.objects.create(
+            name='Available Laptop', brand='Dell', status=Hardware.Status.AVAILABLE,
+        )
+        self.in_use = Hardware.objects.create(
+            name='In-Use Laptop', brand='Dell', status=Hardware.Status.IN_USE,
+        )
+        self.in_repair = Hardware.objects.create(
+            name='Broken Laptop', brand='Dell', status=Hardware.Status.REPAIR,
+        )
+        self.flagged_but_available = Hardware.objects.create(
+            name='Flagged Laptop', brand='Dell', status=Hardware.Status.AVAILABLE,
+            needs_review=True, review_notes='missing purchase date',
+        )
+
+    def as_(self, user):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {Token.objects.create(user=user).key}')
+
+    def test_renting_available_item_succeeds(self):
+        self.as_(self.renter)
+        response = self.client.post(f'/api/hardware/{self.available.pk}/rent/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'In Use')
+        self.assertTrue(response.json()['rented_by_me'])
+
+        self.available.refresh_from_db()
+        self.assertEqual(self.available.status, Hardware.Status.IN_USE)
+        self.assertEqual(self.available.rented_by, self.renter)
+        self.assertIsNotNone(self.available.rented_at)
+
+    def test_rented_by_me_is_false_for_other_users(self):
+        self.as_(self.renter)
+        self.client.post(f'/api/hardware/{self.available.pk}/rent/')
+
+        self.as_(self.other)
+        response = self.client.get('/api/hardware/')
+        row = next(r for r in response.json() if r['id'] == self.available.pk)
+        self.assertFalse(row['rented_by_me'])
+
+    def test_renting_already_rented_item_fails(self):
+        self.as_(self.other)
+        response = self.client.post(f'/api/hardware/{self.in_use.pk}/rent/')
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('already rented', response.json()['detail'])
+
+        self.in_use.refresh_from_db()
+        self.assertIsNone(self.in_use.rented_by)
+
+    def test_renting_item_in_repair_fails(self):
+        self.as_(self.renter)
+        response = self.client.post(f'/api/hardware/{self.in_repair.pk}/rent/')
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('repair', response.json()['detail'])
+
+    def test_renting_flagged_item_fails_even_though_status_is_available(self):
+        self.as_(self.renter)
+        response = self.client.post(f'/api/hardware/{self.flagged_but_available.pk}/rent/')
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('flagged', response.json()['detail'])
+
+        self.flagged_but_available.refresh_from_db()
+        self.assertIsNone(self.flagged_but_available.rented_by)
+        self.assertEqual(self.flagged_but_available.status, Hardware.Status.AVAILABLE)
+
+    def test_unauthenticated_cannot_rent(self):
+        response = self.client.post(f'/api/hardware/{self.available.pk}/rent/')
+        self.assertEqual(response.status_code, 401)
+
+    def test_returning_by_renting_user_succeeds(self):
+        self.as_(self.renter)
+        self.client.post(f'/api/hardware/{self.available.pk}/rent/')
+
+        response = self.client.post(f'/api/hardware/{self.available.pk}/return/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'Available')
+        self.assertFalse(response.json()['rented_by_me'])
+
+        self.available.refresh_from_db()
+        self.assertEqual(self.available.status, Hardware.Status.AVAILABLE)
+        self.assertIsNone(self.available.rented_by)
+        self.assertIsNone(self.available.rented_at)
+
+    def test_returning_by_different_regular_user_fails_with_403(self):
+        self.as_(self.renter)
+        self.client.post(f'/api/hardware/{self.available.pk}/rent/')
+
+        self.as_(self.other)
+        response = self.client.post(f'/api/hardware/{self.available.pk}/return/')
+        self.assertEqual(response.status_code, 403)
+
+        self.available.refresh_from_db()
+        self.assertEqual(self.available.status, Hardware.Status.IN_USE)
+        self.assertEqual(self.available.rented_by, self.renter)
+
+    def test_returning_by_admin_succeeds_regardless_of_renter(self):
+        self.as_(self.renter)
+        self.client.post(f'/api/hardware/{self.available.pk}/rent/')
+
+        self.as_(self.admin)
+        response = self.client.post(f'/api/hardware/{self.available.pk}/return/')
+        self.assertEqual(response.status_code, 200)
+
+        self.available.refresh_from_db()
+        self.assertEqual(self.available.status, Hardware.Status.AVAILABLE)
+        self.assertIsNone(self.available.rented_by)
+
+    def test_returning_item_that_was_never_rented_fails_cleanly(self):
+        self.as_(self.renter)
+        response = self.client.post(f'/api/hardware/{self.available.pk}/return/')
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('not currently rented', response.json()['detail'])
+
+        self.available.refresh_from_db()
+        self.assertEqual(self.available.status, Hardware.Status.AVAILABLE)
         self.assertEqual(Hardware.objects.filter(brand='HP').count(), 0)

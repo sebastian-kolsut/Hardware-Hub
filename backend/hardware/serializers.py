@@ -22,7 +22,18 @@ class HardwareStatusField(serializers.CharField):
 
 class HardwareSerializer(serializers.ModelSerializer):
     status = HardwareStatusField()
+    # Whether the requesting user is the current renter — not who the renter
+    # actually is, so the list endpoint doesn't leak other users' identities
+    # to every authenticated viewer. Enough for the frontend to decide
+    # whether to show a Return button.
+    rented_by_me = serializers.SerializerMethodField()
 
     class Meta:
         model = Hardware
-        fields = ['id', 'name', 'brand', 'purchase_date', 'status']
+        fields = ['id', 'name', 'brand', 'purchase_date', 'status', 'rented_by_me']
+
+    def get_rented_by_me(self, obj):
+        request = self.context.get('request')
+        return bool(
+            request and request.user.is_authenticated and obj.rented_by_id == request.user.id
+        )

@@ -18,7 +18,12 @@ from django.contrib import admin
 from django.urls import path
 
 from config.views import LoginView, LogoutView, MeView, UserCreateView, ping
-from hardware.views import HardwareDetailView, HardwareListView
+from hardware.views import (
+    HardwareDetailView,
+    HardwareListView,
+    HardwareRentView,
+    HardwareReturnView,
+)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -29,4 +34,6 @@ urlpatterns = [
     path('api/auth/users/', UserCreateView.as_view(), name='auth-users'),
     path('api/hardware/', HardwareListView.as_view(), name='hardware-list'),
     path('api/hardware/<int:pk>/', HardwareDetailView.as_view(), name='hardware-detail'),
+    path('api/hardware/<int:pk>/rent/', HardwareRentView.as_view(), name='hardware-rent'),
+    path('api/hardware/<int:pk>/return/', HardwareReturnView.as_view(), name='hardware-return'),
 ]

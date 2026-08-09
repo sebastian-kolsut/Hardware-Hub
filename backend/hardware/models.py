@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -37,6 +38,17 @@ class Hardware(models.Model):
 
     needs_review = models.BooleanField(default=False)
     review_notes = models.TextField(blank=True)
+
+    # Who currently has this item, if anyone — current state only, no rental
+    # history. Cleared back to null on return.
+    rented_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='rented_hardware',
+    )
+    rented_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
