@@ -99,6 +99,49 @@ function statusClass(status) {
   }
 }
 
+// --- Rent / return (any authenticated user) ---
+
+const rentingId = ref(null)
+const returningId = ref(null)
+
+function canRent(item) {
+  return item.status === 'Available'
+}
+
+function canReturn(item) {
+  // Backend enforces the same rule (renter or staff) — this only decides
+  // whether to show the button; the request would 403 either way if wrong.
+  return item.status === 'In Use' && (item.rented_by_me || isStaff.value)
+}
+
+async function rentItem(item) {
+  rentingId.value = item.id
+  try {
+    const response = await apiFetch(`/api/hardware/${item.id}/rent/`, { method: 'POST' })
+    const data = await response.json()
+    if (!response.ok) throw new Error(toApiFieldError(data))
+    Object.assign(item, { ...data, purchaseDate: data.purchase_date })
+  } catch (err) {
+    window.alert(`Could not rent "${item.name}": ${err.message}`)
+  } finally {
+    rentingId.value = null
+  }
+}
+
+async function returnItem(item) {
+  returningId.value = item.id
+  try {
+    const response = await apiFetch(`/api/hardware/${item.id}/return/`, { method: 'POST' })
+    const data = await response.json()
+    if (!response.ok) throw new Error(toApiFieldError(data))
+    Object.assign(item, { ...data, purchaseDate: data.purchase_date })
+  } catch (err) {
+    window.alert(`Could not return "${item.name}": ${err.message}`)
+  } finally {
+    returningId.value = null
+  }
+}
+
 // --- Admin: toggle a row's status to/from Repair ---
 
 const statusUpdatingId = ref(null)
@@ -349,7 +392,30 @@ async function handleCreateUser() {
               <span class="status-badge" :class="statusClass(item.status)">{{ item.status }}</span>
             </td>
             <td class="actions-cell">
-              <button class="rent-btn" disabled title="Coming soon">Rent</button>
+              <button
+                v-if="canRent(item)"
+                class="rent-btn"
+                :disabled="rentingId === item.id"
+                @click="rentItem(item)"
+              >
+                {{ rentingId === item.id ? 'Renting...' : 'Rent' }}
+              </button>
+              <button
+                v-else-if="canReturn(item)"
+                class="rent-btn"
+                :disabled="returningId === item.id"
+                @click="returnItem(item)"
+              >
+                {{ returningId === item.id ? 'Returning...' : 'Return' }}
+              </button>
+              <button
+                v-else
+                class="rent-btn"
+                disabled
+                :title="item.status === 'In Use' ? 'Rented by someone else' : 'Not available to rent'"
+              >
+                {{ item.status === 'In Use' ? 'Rented' : 'Unavailable' }}
+              </button>
               <template v-if="isStaff">
                 <button
                   class="admin-btn"
@@ -644,6 +710,10 @@ async function handleCreateUser() {
   color: var(--bg);
   font-size: 0.82rem;
   font-weight: 500;
+  cursor: pointer;
+}
+
+.rent-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
