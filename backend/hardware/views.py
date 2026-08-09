@@ -25,6 +25,12 @@ class HardwareListView(generics.ListCreateAPIView):
     ordering as hardware/admin.py), so they can work through the review
     queue directly from the dashboard instead of only in /admin/.
 
+    ?mine=true additionally scopes the list to items rented by the calling
+    user, regardless of role — "my rentals" means literally mine, not the
+    broader admin-vs-regular-user visibility rules above. A non-admin still
+    can't see a flagged item this way (needs_review stays enforced), though
+    in practice a flagged item can't be rented in the first place.
+
     POST: admin-only creation of a new hardware record.
     """
 
@@ -38,6 +44,13 @@ class HardwareListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         base = super().get_queryset()
+
+        if self.request.query_params.get('mine', '').lower() == 'true':
+            mine = base.filter(rented_by=self.request.user)
+            if not self.request.user.is_staff:
+                mine = mine.clean()
+            return mine.order_by('name')
+
         if self.request.user.is_staff:
             return base.order_by('-needs_review', 'name')
         return base.clean().order_by('name')

@@ -533,3 +533,59 @@ class NeedsReviewVisibilityTests(APITestCase):
         self.assertEqual(self.flagged.purchase_date.isoformat(), '2022-06-01')
         self.assertEqual(self.flagged.status, Hardware.Status.REPAIR)
         self.assertFalse(self.flagged.needs_review)
+
+
+class MineFilterTests(APITestCase):
+    """?mine=true is a hard override of the normal role-based visibility
+    rules — it's scoped to "what did I personally rent," full stop."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user('mine_admin', password='adminpass123', is_staff=True)
+        self.renter = User.objects.create_user('mine_renter', password='renterpass123')
+        self.other = User.objects.create_user('mine_other', password='otherpass123')
+
+        self.my_item = Hardware.objects.create(
+            name='My Laptop', brand='Dell', status=Hardware.Status.IN_USE, rented_by=self.renter,
+        )
+        self.other_item = Hardware.objects.create(
+            name='Other Laptop', brand='Dell', status=Hardware.Status.IN_USE, rented_by=self.other,
+        )
+        self.unrented_item = Hardware.objects.create(
+            name='Unrented Laptop', brand='Dell', status=Hardware.Status.AVAILABLE,
+        )
+
+    def as_(self, user):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {Token.objects.create(user=user).key}')
+
+    def test_mine_filter_returns_only_items_rented_by_the_requesting_user(self):
+        self.as_(self.renter)
+        response = self.client.get('/api/hardware/?mine=true')
+        ids = {row['id'] for row in response.json()}
+        self.assertEqual(ids, {self.my_item.pk})
+
+    def test_mine_filter_excludes_items_rented_by_others_even_for_an_admin(self):
+        # The admin can normally see every record, but ?mine=true must still
+        # be scoped to only what the admin themselves has rented — not what
+        # their broader admin visibility would otherwise show.
+        admin_item = Hardware.objects.create(
+            name='Admin Laptop', brand='Dell', status=Hardware.Status.IN_USE, rented_by=self.admin,
+        )
+        self.as_(self.admin)
+        response = self.client.get('/api/hardware/?mine=true')
+        ids = {row['id'] for row in response.json()}
+        self.assertEqual(ids, {admin_item.pk})
+
+    def test_mine_filter_is_empty_when_the_user_has_no_rentals(self):
+        self.as_(self.admin)
+        response = self.client.get('/api/hardware/?mine=true')
+        self.assertEqual(response.json(), [])
+
+    def test_mine_filter_still_hides_flagged_items_from_regular_users(self):
+        flagged_and_rented = Hardware.objects.create(
+            name='Flagged Rented Laptop', brand='Dell', status=Hardware.Status.IN_USE,
+            rented_by=self.renter, needs_review=True, review_notes='data issue',
+        )
+        self.as_(self.renter)
+        response = self.client.get('/api/hardware/?mine=true')
+        ids = {row['id'] for row in response.json()}
+        self.assertNotIn(flagged_and_rented.pk, ids)
