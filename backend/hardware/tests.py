@@ -459,4 +459,77 @@ class RentReturnTests(APITestCase):
 
         self.available.refresh_from_db()
         self.assertEqual(self.available.status, Hardware.Status.AVAILABLE)
-        self.assertEqual(Hardware.objects.filter(brand='HP').count(), 0)
+
+
+class NeedsReviewVisibilityTests(APITestCase):
+    """Flagged items stay invisible to regular users everywhere, but admins
+    should see them in the main list (sorted first) and be able to clear the
+    flag from there instead of only through /admin/."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user('nr_admin', password='adminpass123', is_staff=True)
+        self.regular = User.objects.create_user('nr_regular', password='regularpass123')
+
+        self.clean_a = Hardware.objects.create(
+            name='Aardvark Laptop', brand='Dell', status=Hardware.Status.AVAILABLE,
+        )
+        self.clean_z = Hardware.objects.create(
+            name='Zebra Laptop', brand='Dell', status=Hardware.Status.AVAILABLE,
+        )
+        self.flagged = Hardware.objects.create(
+            name='Middle Laptop', brand='Dell', status=Hardware.Status.AVAILABLE,
+            needs_review=True, review_notes='missing purchase date',
+        )
+
+    def as_(self, user):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {Token.objects.create(user=user).key}')
+
+    def test_regular_user_never_sees_flagged_items(self):
+        self.as_(self.regular)
+        response = self.client.get('/api/hardware/')
+        ids = [row['id'] for row in response.json()]
+        self.assertNotIn(self.flagged.pk, ids)
+        self.assertNotIn('needs_review', response.json()[0])
+
+    def test_admin_sees_flagged_items_sorted_first(self):
+        self.as_(self.admin)
+        response = self.client.get('/api/hardware/')
+        rows = response.json()
+
+        ids = [row['id'] for row in rows]
+        self.assertIn(self.flagged.pk, ids)
+        self.assertEqual(rows[0]['id'], self.flagged.pk)
+        self.assertTrue(rows[0]['needs_review'])
+        self.assertEqual(rows[0]['review_notes'], 'missing purchase date')
+
+    def test_clearing_needs_review_makes_item_visible_to_regular_users(self):
+        self.as_(self.admin)
+        patch_response = self.client.patch(
+            f'/api/hardware/{self.flagged.pk}/', {'needs_review': False}
+        )
+        self.assertEqual(patch_response.status_code, 200)
+        self.flagged.refresh_from_db()
+        self.assertFalse(self.flagged.needs_review)
+
+        self.as_(self.regular)
+        response = self.client.get('/api/hardware/')
+        ids = [row['id'] for row in response.json()]
+        self.assertIn(self.flagged.pk, ids)
+
+    def test_admin_can_fix_fields_and_clear_needs_review_in_one_patch(self):
+        self.as_(self.admin)
+        response = self.client.patch(f'/api/hardware/{self.flagged.pk}/', {
+            'name': 'Fixed Laptop',
+            'brand': 'HP',
+            'purchase_date': '2022-06-01',
+            'status': 'Repair',
+            'needs_review': False,
+        })
+        self.assertEqual(response.status_code, 200)
+
+        self.flagged.refresh_from_db()
+        self.assertEqual(self.flagged.name, 'Fixed Laptop')
+        self.assertEqual(self.flagged.brand, 'HP')
+        self.assertEqual(self.flagged.purchase_date.isoformat(), '2022-06-01')
+        self.assertEqual(self.flagged.status, Hardware.Status.REPAIR)
+        self.assertFalse(self.flagged.needs_review)

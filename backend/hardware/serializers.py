@@ -31,10 +31,29 @@ class HardwareSerializer(serializers.ModelSerializer):
     # Omitted (None) for everyone else — enforced here, not in the frontend,
     # since the field simply isn't in the payload for anyone not entitled to it.
     rented_by = serializers.SerializerMethodField()
+    # Explanation of why the import flagged this row — informational only;
+    # fixed by correcting the underlying field(s) and clearing needs_review,
+    # not by editing this text directly.
+    review_notes = serializers.CharField(read_only=True)
 
     class Meta:
         model = Hardware
-        fields = ['id', 'name', 'brand', 'purchase_date', 'status', 'rented_by_me', 'rented_by']
+        fields = [
+            'id', 'name', 'brand', 'purchase_date', 'status',
+            'rented_by_me', 'rented_by', 'needs_review', 'review_notes',
+        ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # needs_review/review_notes only ever make sense to someone who can
+        # act on them — pop them entirely for non-admins rather than just
+        # not rendering them client-side, so a regular user has no way to
+        # read them straight off the API response either.
+        request = self.context.get('request')
+        is_admin = bool(request and request.user.is_authenticated and request.user.is_staff)
+        if not is_admin:
+            self.fields.pop('needs_review', None)
+            self.fields.pop('review_notes', None)
 
     def get_rented_by_me(self, obj):
         request = self.context.get('request')

@@ -17,23 +17,30 @@ NOT_AVAILABLE_REASONS = {
 
 
 class HardwareListView(generics.ListCreateAPIView):
-    """GET: hardware listing for any authenticated user.
+    """GET: hardware listing.
 
-    Deliberately scoped to Hardware.objects.clean() — records flagged by the
-    import for anomalies (duplicate ids, bad dates, unknown statuses, ...)
-    never leave the admin. Admin staff work through those in /admin/, which
-    has its own login and shows every record, flagged or not.
+    Regular users stay scoped to Hardware.objects.clean() — records flagged
+    by the import for anomalies (duplicate ids, bad dates, unknown statuses,
+    ...) never reach them. Admins see everything, flagged items first (same
+    ordering as hardware/admin.py), so they can work through the review
+    queue directly from the dashboard instead of only in /admin/.
 
     POST: admin-only creation of a new hardware record.
     """
 
     serializer_class = HardwareSerializer
-    queryset = Hardware.objects.clean().select_related('rented_by').order_by('name')
+    queryset = Hardware.objects.select_related('rented_by').all()
 
     def get_permissions(self):
         if self.request.method == 'POST':
             return [IsAdminUser()]
         return [IsAuthenticated()]
+
+    def get_queryset(self):
+        base = super().get_queryset()
+        if self.request.user.is_staff:
+            return base.order_by('-needs_review', 'name')
+        return base.clean().order_by('name')
 
 
 class HardwareDetailView(
