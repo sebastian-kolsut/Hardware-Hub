@@ -56,13 +56,16 @@ onMounted(async () => {
 .shell {
   display: flex;
   align-items: stretch;
-  min-height: 100vh;
+  height: 100vh;
   font-family: system-ui, sans-serif;
 }
 
 main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 2.5rem 3rem;
 }
 </style>

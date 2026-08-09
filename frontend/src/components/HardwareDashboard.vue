@@ -174,6 +174,29 @@ async function toggleRepair(item) {
   }
 }
 
+// --- Admin: approve a flagged row (clears needs_review without touching
+// the other fields — fixing the underlying data is a separate, explicit
+// step via Edit) ---
+
+const approvingId = ref(null)
+
+async function approveItem(item) {
+  approvingId.value = item.id
+  try {
+    const response = await apiFetch(`/api/hardware/${item.id}/`, {
+      method: 'PATCH',
+      body: JSON.stringify({ needs_review: false }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(toApiFieldError(data))
+    Object.assign(item, { ...data, purchaseDate: data.purchase_date })
+  } catch (err) {
+    window.alert(`Could not approve "${item.name}": ${err.message}`)
+  } finally {
+    approvingId.value = null
+  }
+}
+
 // --- Admin: delete a row ---
 
 async function deleteHardware(item) {
@@ -376,75 +399,98 @@ async function handleCreateUser() {
         </select>
       </div>
 
-      <table class="hardware-table">
-        <thead>
-          <tr>
-            <th
-              v-for="col in columns"
-              :key="col.key"
-              @click="toggleSort(col.key)"
-              :class="{ active: sortKey === col.key }"
+      <div class="table-wrapper">
+        <table class="hardware-table">
+          <thead>
+            <tr>
+              <th
+                v-for="col in columns"
+                :key="col.key"
+                @click="toggleSort(col.key)"
+                :class="{ active: sortKey === col.key }"
+              >
+                {{ col.label }}
+                <span class="sort-indicator">
+                  {{ sortKey === col.key ? (sortDir === 'asc' ? '▲' : '▼') : '' }}
+                </span>
+              </th>
+              <th class="actions-header">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="item in filteredSorted"
+              :key="item.id"
+              :class="{ 'flagged-row': isStaff && item.needs_review }"
             >
-              {{ col.label }}
-              <span class="sort-indicator">
-                {{ sortKey === col.key ? (sortDir === 'asc' ? '▲' : '▼') : '' }}
-              </span>
-            </th>
-            <th class="actions-header">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="item in filteredSorted" :key="item.id">
-            <td class="name-cell">{{ item.name }}</td>
-            <td>{{ item.brand }}</td>
-            <td>{{ formatDate(item.purchaseDate) }}</td>
-            <td>
-              <span class="status-badge" :class="statusClass(item.status)">{{ item.status }}</span>
-              <span v-if="renterLabel(item)" class="renter-label">{{ renterLabel(item) }}</span>
-            </td>
-            <td class="actions-cell">
-              <button
-                v-if="canRent(item)"
-                class="rent-btn"
-                :disabled="rentingId === item.id"
-                @click="rentItem(item)"
-              >
-                {{ rentingId === item.id ? 'Renting...' : 'Rent' }}
-              </button>
-              <button
-                v-else-if="canReturn(item)"
-                class="rent-btn"
-                :disabled="returningId === item.id"
-                @click="returnItem(item)"
-              >
-                {{ returningId === item.id ? 'Returning...' : 'Return' }}
-              </button>
-              <button
-                v-else
-                class="rent-btn"
-                disabled
-                :title="item.status === 'In Use' ? 'Rented by someone else' : 'Not available to rent'"
-              >
-                {{ item.status === 'In Use' ? 'Rented' : 'Unavailable' }}
-              </button>
-              <template v-if="isStaff">
-                <button
-                  class="admin-btn"
-                  :disabled="statusUpdatingId === item.id"
-                  @click="toggleRepair(item)"
+              <td class="name-cell">
+                {{ item.name }}
+                <span
+                  v-if="isStaff && item.needs_review"
+                  class="review-badge"
+                  :title="item.review_notes || 'Flagged for review'"
                 >
-                  {{ item.status === 'Repair' ? 'Mark Available' : 'Send to Repair' }}
+                  Needs review
+                </span>
+              </td>
+              <td>{{ item.brand }}</td>
+              <td>{{ formatDate(item.purchaseDate) }}</td>
+              <td>
+                <span class="status-badge" :class="statusClass(item.status)">{{ item.status }}</span>
+                <span v-if="renterLabel(item)" class="renter-label">{{ renterLabel(item) }}</span>
+              </td>
+              <td class="actions-cell">
+                <button
+                  v-if="canRent(item)"
+                  class="rent-btn"
+                  :disabled="rentingId === item.id"
+                  @click="rentItem(item)"
+                >
+                  {{ rentingId === item.id ? 'Renting...' : 'Rent' }}
                 </button>
-                <button class="admin-btn" @click="openEditForm(item)">Edit</button>
-                <button class="admin-btn danger" @click="deleteHardware(item)">Delete</button>
-              </template>
-            </td>
-          </tr>
-          <tr v-if="filteredSorted.length === 0">
-            <td colspan="5" class="empty">No hardware matches your filters.</td>
-          </tr>
-        </tbody>
-      </table>
+                <button
+                  v-else-if="canReturn(item)"
+                  class="rent-btn"
+                  :disabled="returningId === item.id"
+                  @click="returnItem(item)"
+                >
+                  {{ returningId === item.id ? 'Returning...' : 'Return' }}
+                </button>
+                <button
+                  v-else
+                  class="rent-btn"
+                  disabled
+                  :title="item.status === 'In Use' ? 'Rented by someone else' : 'Not available to rent'"
+                >
+                  {{ item.status === 'In Use' ? 'Rented' : 'Unavailable' }}
+                </button>
+                <template v-if="isStaff">
+                  <button
+                    class="admin-btn"
+                    :disabled="statusUpdatingId === item.id"
+                    @click="toggleRepair(item)"
+                  >
+                    {{ item.status === 'Repair' ? 'Mark Available' : 'Send to Repair' }}
+                  </button>
+                  <button class="admin-btn" @click="openEditForm(item)">Edit</button>
+                  <button
+                    v-if="item.needs_review"
+                    class="admin-btn approve"
+                    :disabled="approvingId === item.id"
+                    @click="approveItem(item)"
+                  >
+                    {{ approvingId === item.id ? 'Approving...' : 'Approve' }}
+                  </button>
+                  <button class="admin-btn danger" @click="deleteHardware(item)">Delete</button>
+                </template>
+              </td>
+            </tr>
+            <tr v-if="filteredSorted.length === 0">
+              <td colspan="5" class="empty">No hardware matches your filters.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </template>
   </section>
 </template>
@@ -452,6 +498,10 @@ async function handleCreateUser() {
 <style scoped>
 .dashboard {
   width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   text-align: left;
 
   --badge-available-bg: #18181b;
@@ -460,6 +510,9 @@ async function handleCreateUser() {
   --badge-inuse-fg: #fafafa;
   --badge-repair-bg: #dc2626;
   --badge-repair-fg: #fff5f5;
+  --flag-bg: #fef3c7;
+  --flag-fg: #92400e;
+  --flag-row-bg: rgba(217, 119, 6, 0.08);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -470,6 +523,9 @@ async function handleCreateUser() {
     --badge-inuse-fg: #fafafa;
     --badge-repair-bg: #ef4444;
     --badge-repair-fg: #450a0a;
+    --flag-bg: #78350f;
+    --flag-fg: #fde68a;
+    --flag-row-bg: rgba(217, 119, 6, 0.15);
   }
 }
 
@@ -634,6 +690,14 @@ async function handleCreateUser() {
   background: var(--bg);
 }
 
+.table-wrapper {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
 .hardware-table {
   width: 100%;
   border-collapse: collapse;
@@ -643,6 +707,13 @@ async function handleCreateUser() {
 .hardware-table td {
   padding: 0.7rem 0.75rem;
   border-bottom: 1px solid var(--border);
+}
+
+.hardware-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
 }
 
 .hardware-table th {
@@ -668,6 +739,22 @@ async function handleCreateUser() {
   color: var(--text-h);
 }
 
+.flagged-row {
+  background: var(--flag-row-bg);
+}
+
+.review-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  background: var(--flag-bg);
+  color: var(--flag-fg);
+  cursor: help;
+}
+
 .sort-indicator {
   font-size: 0.7rem;
   color: var(--text);
@@ -675,6 +762,10 @@ async function handleCreateUser() {
 
 .hardware-table tbody tr:hover {
   background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.hardware-table tbody tr.flagged-row:hover {
+  background: color-mix(in srgb, var(--flag-fg) 12%, var(--flag-row-bg));
 }
 
 .empty {
@@ -763,5 +854,14 @@ async function handleCreateUser() {
 
 .admin-btn.danger:hover {
   border-color: #dc2626;
+}
+
+.admin-btn.approve {
+  color: var(--flag-fg);
+  border-color: var(--flag-fg);
+}
+
+.admin-btn.approve:hover {
+  background: var(--flag-bg);
 }
 </style>
