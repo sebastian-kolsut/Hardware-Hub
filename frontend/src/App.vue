@@ -8,6 +8,7 @@ import { apiUrl } from './config'
 
 const status = ref('checking backend...')
 const isError = ref(false)
+const scope = ref('all')
 
 const { isAuthenticated, isReady, username, isStaff, restoreSession, logout } = useAuth()
 
@@ -35,10 +36,12 @@ onMounted(async () => {
       :is-error="isError"
       :username="username"
       :is-staff="isStaff"
+      :scope="scope"
       @logout="logout"
+      @navigate="scope = $event"
     />
     <main>
-      <HardwareDashboard />
+      <HardwareDashboard :scope="scope" />
     </main>
   </div>
 </template>

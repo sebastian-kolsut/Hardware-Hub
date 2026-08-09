@@ -1,7 +1,16 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useAuth } from '../composables/useAuth'
 import { useApi } from '../composables/useApi'
+
+// 'all' (every visible hardware record) or 'mine' (only what the current
+// user has rented) — driven by the sidebar's nav selection in App.vue.
+// One component, one dataset, switched by this prop rather than a second
+// component, since the table/toolbar/sort/filter below is identical
+// either way and there'd be nothing left to share by splitting it out.
+const props = defineProps({
+  scope: { type: String, default: 'all' },
+})
 
 const { isStaff } = useAuth()
 const { apiFetch } = useApi()
@@ -32,9 +41,12 @@ function toApiFieldError(data) {
     .join(' | ')
 }
 
-onMounted(async () => {
+async function loadHardware() {
+  isLoading.value = true
+  loadError.value = ''
   try {
-    const response = await apiFetch('/api/hardware/')
+    const path = props.scope === 'mine' ? '/api/hardware/?mine=true' : '/api/hardware/'
+    const response = await apiFetch(path)
     if (response.status === 401) return // useApi already cleared the session; App.vue swaps to the login screen
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const data = await response.json()
@@ -46,7 +58,10 @@ onMounted(async () => {
   } finally {
     isLoading.value = false
   }
-})
+}
+
+onMounted(loadHardware)
+watch(() => props.scope, loadHardware)
 
 function toggleSort(key) {
   if (sortKey.value === key) {
@@ -80,6 +95,15 @@ const filteredSorted = computed(() => {
   })
 
   return rows
+})
+
+const emptyMessage = computed(() => {
+  if (hardware.value.length === 0) {
+    return props.scope === 'mine'
+      ? "You haven't rented anything yet."
+      : 'No hardware records yet.'
+  }
+  return 'No hardware matches your filters.'
 })
 
 function formatDate(dateStr) {
@@ -486,7 +510,7 @@ async function handleCreateUser() {
               </td>
             </tr>
             <tr v-if="filteredSorted.length === 0">
-              <td colspan="5" class="empty">No hardware matches your filters.</td>
+              <td colspan="5" class="empty">{{ emptyMessage }}</td>
             </tr>
           </tbody>
         </table>

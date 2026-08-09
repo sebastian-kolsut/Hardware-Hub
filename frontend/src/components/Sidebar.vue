@@ -4,9 +4,10 @@ defineProps({
   isError: { type: Boolean, default: false },
   username: { type: String, default: '' },
   isStaff: { type: Boolean, default: false },
+  scope: { type: String, default: 'all' },
 })
 
-defineEmits(['logout'])
+defineEmits(['logout', 'navigate'])
 </script>
 
 <template>
@@ -20,7 +21,7 @@ defineEmits(['logout'])
     </div>
 
     <nav class="nav">
-      <div class="nav-item active">
+      <div class="nav-item" :class="{ active: scope === 'all' }" @click="$emit('navigate', 'all')">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
           <line x1="8" y1="6" x2="21" y2="6" />
           <line x1="8" y1="12" x2="21" y2="12" />
@@ -31,7 +32,7 @@ defineEmits(['logout'])
         </svg>
         Hardware List
       </div>
-      <div class="nav-item disabled" title="Coming soon">
+      <div class="nav-item" :class="{ active: scope === 'mine' }" @click="$emit('navigate', 'mine')">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="12" cy="12" r="9" />
           <polyline points="12 7 12 12 15 15" />
@@ -96,6 +97,11 @@ defineEmits(['logout'])
   border-radius: 0.5rem;
   font-size: 0.9rem;
   color: var(--text);
+  cursor: pointer;
+}
+
+.nav-item:hover {
+  color: var(--text-h);
 }
 
 .nav-item svg {
@@ -108,9 +114,8 @@ defineEmits(['logout'])
   font-weight: 500;
 }
 
-.nav-item.disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.nav-item.active:hover {
+  color: var(--bg);
 }
 
 .footer {
