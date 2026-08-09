@@ -33,6 +33,8 @@ DEBUG = env('DJANGO_DEBUG')
 
 ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
 
+GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
+
 
 # Application definition
 

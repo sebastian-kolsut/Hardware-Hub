@@ -1,3 +1,5 @@
+import logging
+
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, mixins, status
@@ -9,6 +11,8 @@ from config.permissions import IsAdminUser
 
 from .models import Hardware
 from .serializers import HardwareSerializer
+
+logger = logging.getLogger(__name__)
 
 NOT_AVAILABLE_REASONS = {
     Hardware.Status.IN_USE: 'This item is already rented.',
@@ -30,6 +34,11 @@ class HardwareListView(generics.ListCreateAPIView):
     broader admin-vs-regular-user visibility rules above. A non-admin still
     can't see a flagged item this way (needs_review stays enforced), though
     in practice a flagged item can't be rented in the first place.
+
+    ?q=<query> ranks the same visibility-filtered set by semantic
+    similarity to the query instead of the usual ordering — see list()
+    below. It composes with ?mine=true for free, since both just narrow
+    get_queryset() before anything else happens.
 
     POST: admin-only creation of a new hardware record.
     """
@@ -54,6 +63,36 @@ class HardwareListView(generics.ListCreateAPIView):
         if self.request.user.is_staff:
             return base.order_by('-needs_review', 'name')
         return base.clean().order_by('name')
+
+    def list(self, request, *args, **kwargs):
+        query = request.query_params.get('q', '').strip()
+        if not query:
+            return super().list(request, *args, **kwargs)
+
+        from .embeddings import EmbeddingError, cosine_similarity, embed_text
+
+        try:
+            query_vector = embed_text(query)
+        except EmbeddingError as exc:
+            logger.warning('Semantic search query embedding failed: %s', exc)
+            return Response(
+                {'detail': 'Semantic search is temporarily unavailable. Please try again shortly.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        # Same visibility rules as the plain list (get_queryset already
+        # handles mine/needs_review) — just narrowed further to items that
+        # actually have something to compare against, then re-ranked by
+        # similarity in Python instead of the usual DB ordering.
+        queryset = self.filter_queryset(self.get_queryset()).exclude(embedding__isnull=True)
+        scored = sorted(
+            queryset,
+            key=lambda hw: cosine_similarity(query_vector, hw.embedding),
+            reverse=True,
+        )
+
+        serializer = self.get_serializer(scored, many=True)
+        return Response(serializer.data)
 
 
 class HardwareDetailView(

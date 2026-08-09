@@ -3,6 +3,7 @@ import os
 import tempfile
 from datetime import date, timedelta
 from io import StringIO
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -11,7 +12,24 @@ from django.test import TestCase
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
+from .embeddings import EmbeddingError
 from .models import Hardware
+
+# Every Hardware.save() tries to compute an embedding via the Gemini API.
+# Patched for the whole module so the test suite never makes a real network
+# call or depends on a valid API key — individual tests that need specific,
+# controlled vectors override this locally with their own mock.patch.
+_embedding_patcher = None
+
+
+def setUpModule():
+    global _embedding_patcher
+    _embedding_patcher = mock.patch('hardware.embeddings.embed_text', return_value=[0.0, 0.0])
+    _embedding_patcher.start()
+
+
+def tearDownModule():
+    _embedding_patcher.stop()
 
 User = get_user_model()
 
@@ -589,3 +607,95 @@ class MineFilterTests(APITestCase):
         response = self.client.get('/api/hardware/?mine=true')
         ids = {row['id'] for row in response.json()}
         self.assertNotIn(flagged_and_rented.pk, ids)
+
+
+class SemanticSearchTests(APITestCase):
+    """?q= is scored entirely from mocked, controlled embeddings — no real
+    Gemini calls, and the expected similarity ordering is computed by hand
+    below so the test doesn't just re-implement cosine similarity to check
+    itself."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user('search_admin', password='adminpass123', is_staff=True)
+        self.regular = User.objects.create_user('search_regular', password='regularpass123')
+
+        # Query vector used throughout is [1.0, 0.0].
+        # close [1,0]  -> cosine 1.0
+        # middle[.7,.7]-> cosine ~0.707
+        # far   [0,1]  -> cosine 0.0
+        with mock.patch('hardware.embeddings.embed_text', return_value=[1.0, 0.0]):
+            self.close_match = Hardware.objects.create(
+                name='Close Match', brand='Dell', status=Hardware.Status.AVAILABLE,
+            )
+        with mock.patch('hardware.embeddings.embed_text', return_value=[0.7, 0.7]):
+            self.middle_match = Hardware.objects.create(
+                name='Middle Match', brand='Dell', status=Hardware.Status.AVAILABLE,
+            )
+        with mock.patch('hardware.embeddings.embed_text', return_value=[0.0, 1.0]):
+            self.far_match = Hardware.objects.create(
+                name='Far Match', brand='Dell', status=Hardware.Status.AVAILABLE,
+            )
+
+        self.no_embedding_item = Hardware.objects.create(
+            name='No Embedding Item', brand='Dell', status=Hardware.Status.AVAILABLE,
+        )
+        # setUp's module-wide mock still gave this one a dummy embedding —
+        # force it back to null to actually exercise the "never embedded" path.
+        Hardware.objects.filter(pk=self.no_embedding_item.pk).update(embedding=None)
+
+    def as_(self, user):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {Token.objects.create(user=user).key}')
+
+    def test_query_returns_embedded_items_sorted_by_similarity_descending(self):
+        self.as_(self.regular)
+        with mock.patch('hardware.embeddings.embed_text', return_value=[1.0, 0.0]) as mocked:
+            response = self.client.get('/api/hardware/?q=laptop')
+
+        self.assertEqual(response.status_code, 200)
+        mocked.assert_called_once_with('laptop')
+
+        ids = [row['id'] for row in response.json()]
+        self.assertEqual(ids, [self.close_match.pk, self.middle_match.pk, self.far_match.pk])
+
+    def test_items_without_an_embedding_are_excluded_from_search(self):
+        self.as_(self.regular)
+        with mock.patch('hardware.embeddings.embed_text', return_value=[1.0, 0.0]):
+            response = self.client.get('/api/hardware/?q=laptop')
+
+        ids = [row['id'] for row in response.json()]
+        self.assertNotIn(self.no_embedding_item.pk, ids)
+
+    def test_flagged_item_is_excluded_from_search_for_regular_users_even_if_highly_relevant(self):
+        with mock.patch('hardware.embeddings.embed_text', return_value=[1.0, 0.0]):
+            flagged = Hardware.objects.create(
+                name='Flagged High-Relevance Item', brand='Dell', status=Hardware.Status.AVAILABLE,
+                needs_review=True, review_notes='missing purchase date',
+            )
+
+        self.as_(self.regular)
+        with mock.patch('hardware.embeddings.embed_text', return_value=[1.0, 0.0]):
+            response = self.client.get('/api/hardware/?q=laptop')
+
+        ids = [row['id'] for row in response.json()]
+        self.assertNotIn(flagged.pk, ids)
+
+    def test_admin_search_includes_flagged_items_matching_plain_list_visibility(self):
+        with mock.patch('hardware.embeddings.embed_text', return_value=[1.0, 0.0]):
+            flagged = Hardware.objects.create(
+                name='Flagged High-Relevance Item', brand='Dell', status=Hardware.Status.AVAILABLE,
+                needs_review=True, review_notes='missing purchase date',
+            )
+
+        self.as_(self.admin)
+        with mock.patch('hardware.embeddings.embed_text', return_value=[1.0, 0.0]):
+            response = self.client.get('/api/hardware/?q=laptop')
+
+        ids = [row['id'] for row in response.json()]
+        self.assertIn(flagged.pk, ids)
+
+    def test_search_returns_503_when_the_embedding_api_call_fails(self):
+        self.as_(self.regular)
+        with mock.patch('hardware.embeddings.embed_text', side_effect=EmbeddingError('boom')):
+            response = self.client.get('/api/hardware/?q=laptop')
+
+        self.assertEqual(response.status_code, 503)

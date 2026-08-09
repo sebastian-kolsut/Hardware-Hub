@@ -1,5 +1,9 @@
+import logging
+
 from django.conf import settings
 from django.db import models
+
+logger = logging.getLogger(__name__)
 
 
 class HardwareQuerySet(models.QuerySet):
@@ -50,10 +54,63 @@ class Hardware(models.Model):
     )
     rented_at = models.DateTimeField(null=True, blank=True)
 
+    # Precomputed via the Gemini embedding API from embedding_source_text()
+    # (see save() below) — null until computed. Rows created via
+    # bulk_create() (the data.json import) never go through save(), so they
+    # stay null until `generate_embeddings` backfills them. A null
+    # embedding just means "not searchable yet", not an error state.
+    embedding = models.JSONField(null=True, blank=True, default=None, editable=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     objects = HardwareQuerySet.as_manager()
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Captured on load (or initial construction) so save() can tell
+        # whether the text that matters for search actually changed,
+        # instead of recomputing the embedding on every save — a rent,
+        # return, or status toggle shouldn't cost a Gemini API call.
+        self._embedding_source_snapshot = self.embedding_source_text()
+
     def __str__(self):
         return self.name
+
+    def embedding_source_text(self):
+        """Text fed to the embedding model: name, brand, and any values in
+        `extra` — a note like "Battery swelling" can matter to a search
+        just as much as the mapped fields do."""
+        parts = [self.name, self.brand]
+        if self.extra:
+            parts.extend(str(v) for v in self.extra.values())
+        return ' '.join(p for p in parts if p).strip()
+
+    def save(self, *args, **kwargs):
+        is_new = self._state.adding
+        current_text = self.embedding_source_text()
+        text_changed = current_text != self._embedding_source_snapshot
+
+        super().save(*args, **kwargs)
+        self._embedding_source_snapshot = current_text
+
+        if is_new or text_changed:
+            self._refresh_embedding(current_text)
+
+    def _refresh_embedding(self, text):
+        if not text:
+            return
+
+        from .embeddings import EmbeddingError, embed_text
+
+        try:
+            vector = embed_text(text)
+        except EmbeddingError as exc:
+            logger.warning('Could not compute embedding for Hardware %s: %s', self.pk, exc)
+            return
+
+        self.embedding = vector
+        # .update() rather than self.save() — avoids re-entering this same
+        # save() override (and thus re-embedding) for what is just writing
+        # the result of the embedding we already computed.
+        Hardware.objects.filter(pk=self.pk).update(embedding=vector)
