@@ -28,7 +28,7 @@ class HardwareListView(generics.ListCreateAPIView):
     """
 
     serializer_class = HardwareSerializer
-    queryset = Hardware.objects.clean().order_by('name')
+    queryset = Hardware.objects.clean().select_related('rented_by').order_by('name')
 
     def get_permissions(self):
         if self.request.method == 'POST':
@@ -47,7 +47,7 @@ class HardwareDetailView(
 
     permission_classes = [IsAdminUser]
     serializer_class = HardwareSerializer
-    queryset = Hardware.objects.all()
+    queryset = Hardware.objects.select_related('rented_by').all()
 
     def patch(self, request, *args, **kwargs):
         return self.partial_update(request, *args, **kwargs)

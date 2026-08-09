@@ -353,6 +353,37 @@ class RentReturnTests(APITestCase):
         row = next(r for r in response.json() if r['id'] == self.available.pk)
         self.assertFalse(row['rented_by_me'])
 
+    def test_renter_username_is_hidden_from_other_regular_users(self):
+        self.as_(self.renter)
+        self.client.post(f'/api/hardware/{self.available.pk}/rent/')
+
+        self.as_(self.other)
+        response = self.client.get('/api/hardware/')
+        # Not just the field — the username must not appear anywhere in the
+        # payload, since a regular user could otherwise read it off the raw
+        # response regardless of which field it showed up in.
+        self.assertNotIn(self.renter.username, response.content.decode())
+
+        row = next(r for r in response.json() if r['id'] == self.available.pk)
+        self.assertIsNone(row['rented_by'])
+
+    def test_renter_can_see_their_own_username(self):
+        self.as_(self.renter)
+        self.client.post(f'/api/hardware/{self.available.pk}/rent/')
+
+        response = self.client.get('/api/hardware/')
+        row = next(r for r in response.json() if r['id'] == self.available.pk)
+        self.assertEqual(row['rented_by'], self.renter.username)
+
+    def test_admin_can_see_renter_username(self):
+        self.as_(self.renter)
+        self.client.post(f'/api/hardware/{self.available.pk}/rent/')
+
+        self.as_(self.admin)
+        response = self.client.get('/api/hardware/')
+        row = next(r for r in response.json() if r['id'] == self.available.pk)
+        self.assertEqual(row['rented_by'], self.renter.username)
+
     def test_renting_already_rented_item_fails(self):
         self.as_(self.other)
         response = self.client.post(f'/api/hardware/{self.in_use.pk}/rent/')

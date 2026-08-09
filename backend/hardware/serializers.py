@@ -27,13 +27,26 @@ class HardwareSerializer(serializers.ModelSerializer):
     # to every authenticated viewer. Enough for the frontend to decide
     # whether to show a Return button.
     rented_by_me = serializers.SerializerMethodField()
+    # The renter's username, but only for an admin or the renter themselves.
+    # Omitted (None) for everyone else — enforced here, not in the frontend,
+    # since the field simply isn't in the payload for anyone not entitled to it.
+    rented_by = serializers.SerializerMethodField()
 
     class Meta:
         model = Hardware
-        fields = ['id', 'name', 'brand', 'purchase_date', 'status', 'rented_by_me']
+        fields = ['id', 'name', 'brand', 'purchase_date', 'status', 'rented_by_me', 'rented_by']
 
     def get_rented_by_me(self, obj):
         request = self.context.get('request')
         return bool(
             request and request.user.is_authenticated and obj.rented_by_id == request.user.id
         )
+
+    def get_rented_by(self, obj):
+        request = self.context.get('request')
+        if not obj.rented_by_id or not request or not request.user.is_authenticated:
+            return None
+        user = request.user
+        if user.is_staff or obj.rented_by_id == user.id:
+            return obj.rented_by.username
+        return None
