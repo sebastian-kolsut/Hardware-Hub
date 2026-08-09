@@ -41,6 +41,28 @@ function toApiFieldError(data) {
     .join(' | ')
 }
 
+// AI search results live in their own array rather than replacing
+// `hardware` — that keeps the normal list intact in the background so
+// "Clear AI search" is instant (no refetch) and switching back to plain
+// browsing doesn't lose the current keyword/filter/sort state.
+//
+// Because of that, any row mutation (rent, return, edit, ...) has to be
+// applied to whichever array(s) currently hold that row, not just
+// `hardware` — updateRowEverywhere/removeRowEverywhere below do that in
+// one place instead of every handler reaching into both arrays itself.
+function updateRowEverywhere(id, data) {
+  const patch = { ...data, purchaseDate: data.purchase_date }
+  for (const list of [hardware.value, aiResults.value]) {
+    const row = list.find((r) => r.id === id)
+    if (row) Object.assign(row, patch)
+  }
+}
+
+function removeRowEverywhere(id) {
+  hardware.value = hardware.value.filter((row) => row.id !== id)
+  aiResults.value = aiResults.value.filter((row) => row.id !== id)
+}
+
 async function loadHardware() {
   isLoading.value = true
   loadError.value = ''
@@ -63,7 +85,54 @@ async function loadHardware() {
 onMounted(loadHardware)
 watch(() => props.scope, loadHardware)
 
+// --- AI (semantic) search — only on the "All Hardware" scope ---
+//
+// A separate mode rather than folding into the keyword `search` ref: the
+// backend does the ranking (GET /api/hardware/?q=), so results must be
+// rendered exactly as returned, not re-sorted/re-filtered through
+// `filteredSorted` like the keyword search is.
+
+const aiQuery = ref('')
+const isAiSearchActive = ref(false)
+const isAiSearching = ref(false)
+const aiSearchError = ref('')
+const aiResults = ref([])
+
+async function runAiSearch() {
+  const query = aiQuery.value.trim()
+  if (!query) return
+
+  isAiSearchActive.value = true
+  isAiSearching.value = true
+  aiSearchError.value = ''
+  aiResults.value = []
+
+  try {
+    const response = await apiFetch(`/api/hardware/?q=${encodeURIComponent(query)}`)
+    if (response.status === 401) return // useApi already cleared the session; App.vue swaps to the login screen
+    const data = await response.json()
+    if (response.status === 503) {
+      aiSearchError.value = data.detail || 'Semantic search is temporarily unavailable.'
+      return
+    }
+    if (!response.ok) throw new Error(toApiFieldError(data))
+    aiResults.value = data.map((item) => ({ ...item, purchaseDate: item.purchase_date }))
+  } catch (err) {
+    aiSearchError.value = `Could not run AI search: ${err.message}`
+  } finally {
+    isAiSearching.value = false
+  }
+}
+
+function clearAiSearch() {
+  isAiSearchActive.value = false
+  aiQuery.value = ''
+  aiResults.value = []
+  aiSearchError.value = ''
+}
+
 function toggleSort(key) {
+  if (isAiSearchActive.value) return // AI results are shown in backend rank order, not client-sorted
   if (sortKey.value === key) {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
   } else {
@@ -97,7 +166,15 @@ const filteredSorted = computed(() => {
   return rows
 })
 
+// AI results bypass filteredSorted entirely — rendered in whatever order
+// the backend ranked them, untouched by the keyword search/status filter/
+// column sort (which are hidden while AI search is active anyway).
+const displayedRows = computed(() => (isAiSearchActive.value ? aiResults.value : filteredSorted.value))
+
 const emptyMessage = computed(() => {
+  if (isAiSearchActive.value) {
+    return aiSearchError.value ? 'Search unavailable — see the error above.' : 'No matches for that search.'
+  }
   if (hardware.value.length === 0) {
     return props.scope === 'mine'
       ? "You haven't rented anything yet."
@@ -154,7 +231,7 @@ async function rentItem(item) {
     const response = await apiFetch(`/api/hardware/${item.id}/rent/`, { method: 'POST' })
     const data = await response.json()
     if (!response.ok) throw new Error(toApiFieldError(data))
-    Object.assign(item, { ...data, purchaseDate: data.purchase_date })
+    updateRowEverywhere(item.id, data)
   } catch (err) {
     window.alert(`Could not rent "${item.name}": ${err.message}`)
   } finally {
@@ -168,7 +245,7 @@ async function returnItem(item) {
     const response = await apiFetch(`/api/hardware/${item.id}/return/`, { method: 'POST' })
     const data = await response.json()
     if (!response.ok) throw new Error(toApiFieldError(data))
-    Object.assign(item, { ...data, purchaseDate: data.purchase_date })
+    updateRowEverywhere(item.id, data)
   } catch (err) {
     window.alert(`Could not return "${item.name}": ${err.message}`)
   } finally {
@@ -190,7 +267,7 @@ async function toggleRepair(item) {
     })
     const data = await response.json()
     if (!response.ok) throw new Error(toApiFieldError(data))
-    item.status = data.status
+    updateRowEverywhere(item.id, data)
   } catch (err) {
     window.alert(`Could not update status: ${err.message}`)
   } finally {
@@ -213,7 +290,7 @@ async function approveItem(item) {
     })
     const data = await response.json()
     if (!response.ok) throw new Error(toApiFieldError(data))
-    Object.assign(item, { ...data, purchaseDate: data.purchase_date })
+    updateRowEverywhere(item.id, data)
   } catch (err) {
     window.alert(`Could not approve "${item.name}": ${err.message}`)
   } finally {
@@ -228,7 +305,7 @@ async function deleteHardware(item) {
   try {
     const response = await apiFetch(`/api/hardware/${item.id}/`, { method: 'DELETE' })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    hardware.value = hardware.value.filter((row) => row.id !== item.id)
+    removeRowEverywhere(item.id)
     // The edit form might be open on the row we just removed.
     if (editingItem.value?.id === item.id) closeHardwareForm()
   } catch (err) {
@@ -303,8 +380,7 @@ async function handleSubmitHardwareForm() {
     if (!response.ok) throw new Error(toApiFieldError(data))
 
     if (editingItem.value) {
-      const target = hardware.value.find((row) => row.id === editingItem.value.id)
-      if (target) Object.assign(target, { ...data, purchaseDate: data.purchase_date })
+      updateRowEverywhere(editingItem.value.id, data)
     } else {
       hardware.value.push({ ...data, purchaseDate: data.purchase_date })
     }
@@ -410,7 +486,26 @@ async function handleCreateUser() {
         </form>
       </section>
 
-      <div class="toolbar">
+      <div v-if="props.scope === 'all'" class="ai-search">
+        <form class="ai-search-form" @submit.prevent="runAiSearch">
+          <input
+            v-model="aiQuery"
+            type="text"
+            class="ai-search-input"
+            placeholder="Describe what you need... (AI search)"
+            :disabled="isAiSearching"
+          />
+          <button type="submit" class="ai-search-btn" :disabled="isAiSearching || !aiQuery.trim()">
+            {{ isAiSearching ? 'Searching...' : 'AI Search' }}
+          </button>
+          <button v-if="isAiSearchActive" type="button" class="ai-clear-btn" @click="clearAiSearch">
+            Clear AI search
+          </button>
+        </form>
+        <p v-if="aiSearchError" class="form-message error">{{ aiSearchError }}</p>
+      </div>
+
+      <div v-if="!isAiSearchActive" class="toolbar">
         <input
           v-model="search"
           type="text"
@@ -431,7 +526,7 @@ async function handleCreateUser() {
                 v-for="col in columns"
                 :key="col.key"
                 @click="toggleSort(col.key)"
-                :class="{ active: sortKey === col.key }"
+                :class="{ active: sortKey === col.key, disabled: isAiSearchActive }"
               >
                 {{ col.label }}
                 <span class="sort-indicator">
@@ -442,76 +537,81 @@ async function handleCreateUser() {
             </tr>
           </thead>
           <tbody>
-            <tr
-              v-for="item in filteredSorted"
-              :key="item.id"
-              :class="{ 'flagged-row': isStaff && item.needs_review }"
-            >
-              <td class="name-cell">
-                {{ item.name }}
-                <span
-                  v-if="isStaff && item.needs_review"
-                  class="review-badge"
-                  :title="item.review_notes || 'Flagged for review'"
-                >
-                  Needs review
-                </span>
-              </td>
-              <td>{{ item.brand }}</td>
-              <td>{{ formatDate(item.purchaseDate) }}</td>
-              <td>
-                <span class="status-badge" :class="statusClass(item.status)">{{ item.status }}</span>
-                <span v-if="renterLabel(item)" class="renter-label">{{ renterLabel(item) }}</span>
-              </td>
-              <td class="actions-cell">
-                <button
-                  v-if="canRent(item)"
-                  class="rent-btn"
-                  :disabled="rentingId === item.id"
-                  @click="rentItem(item)"
-                >
-                  {{ rentingId === item.id ? 'Renting...' : 'Rent' }}
-                </button>
-                <button
-                  v-else-if="canReturn(item)"
-                  class="rent-btn"
-                  :disabled="returningId === item.id"
-                  @click="returnItem(item)"
-                >
-                  {{ returningId === item.id ? 'Returning...' : 'Return' }}
-                </button>
-                <button
-                  v-else
-                  class="rent-btn"
-                  disabled
-                  :title="item.status === 'In Use' ? 'Rented by someone else' : 'Not available to rent'"
-                >
-                  {{ item.status === 'In Use' ? 'Rented' : 'Unavailable' }}
-                </button>
-                <template v-if="isStaff">
-                  <button
-                    class="admin-btn"
-                    :disabled="statusUpdatingId === item.id"
-                    @click="toggleRepair(item)"
-                  >
-                    {{ item.status === 'Repair' ? 'Mark Available' : 'Send to Repair' }}
-                  </button>
-                  <button class="admin-btn" @click="openEditForm(item)">Edit</button>
-                  <button
-                    v-if="item.needs_review"
-                    class="admin-btn approve"
-                    :disabled="approvingId === item.id"
-                    @click="approveItem(item)"
-                  >
-                    {{ approvingId === item.id ? 'Approving...' : 'Approve' }}
-                  </button>
-                  <button class="admin-btn danger" @click="deleteHardware(item)">Delete</button>
-                </template>
-              </td>
+            <tr v-if="isAiSearching">
+              <td colspan="5" class="empty">Searching...</td>
             </tr>
-            <tr v-if="filteredSorted.length === 0">
-              <td colspan="5" class="empty">{{ emptyMessage }}</td>
-            </tr>
+            <template v-else>
+              <tr
+                v-for="item in displayedRows"
+                :key="item.id"
+                :class="{ 'flagged-row': isStaff && item.needs_review }"
+              >
+                <td class="name-cell">
+                  {{ item.name }}
+                  <span
+                    v-if="isStaff && item.needs_review"
+                    class="review-badge"
+                    :title="item.review_notes || 'Flagged for review'"
+                  >
+                    Needs review
+                  </span>
+                </td>
+                <td>{{ item.brand }}</td>
+                <td>{{ formatDate(item.purchaseDate) }}</td>
+                <td>
+                  <span class="status-badge" :class="statusClass(item.status)">{{ item.status }}</span>
+                  <span v-if="renterLabel(item)" class="renter-label">{{ renterLabel(item) }}</span>
+                </td>
+                <td class="actions-cell">
+                  <button
+                    v-if="canRent(item)"
+                    class="rent-btn"
+                    :disabled="rentingId === item.id"
+                    @click="rentItem(item)"
+                  >
+                    {{ rentingId === item.id ? 'Renting...' : 'Rent' }}
+                  </button>
+                  <button
+                    v-else-if="canReturn(item)"
+                    class="rent-btn"
+                    :disabled="returningId === item.id"
+                    @click="returnItem(item)"
+                  >
+                    {{ returningId === item.id ? 'Returning...' : 'Return' }}
+                  </button>
+                  <button
+                    v-else
+                    class="rent-btn"
+                    disabled
+                    :title="item.status === 'In Use' ? 'Rented by someone else' : 'Not available to rent'"
+                  >
+                    {{ item.status === 'In Use' ? 'Rented' : 'Unavailable' }}
+                  </button>
+                  <template v-if="isStaff">
+                    <button
+                      class="admin-btn"
+                      :disabled="statusUpdatingId === item.id"
+                      @click="toggleRepair(item)"
+                    >
+                      {{ item.status === 'Repair' ? 'Mark Available' : 'Send to Repair' }}
+                    </button>
+                    <button class="admin-btn" @click="openEditForm(item)">Edit</button>
+                    <button
+                      v-if="item.needs_review"
+                      class="admin-btn approve"
+                      :disabled="approvingId === item.id"
+                      @click="approveItem(item)"
+                    >
+                      {{ approvingId === item.id ? 'Approving...' : 'Approve' }}
+                    </button>
+                    <button class="admin-btn danger" @click="deleteHardware(item)">Delete</button>
+                  </template>
+                </td>
+              </tr>
+              <tr v-if="displayedRows.length === 0">
+                <td colspan="5" class="empty">{{ emptyMessage }}</td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
@@ -679,6 +779,67 @@ async function handleCreateUser() {
   color: #15803d;
 }
 
+.ai-search {
+  margin-bottom: 1rem;
+}
+
+.ai-search-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.ai-search-input {
+  flex: 1;
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--accent-border);
+  border-radius: 0.375rem;
+  font-size: 0.95rem;
+  color: var(--text-h);
+  background: var(--accent-bg);
+}
+
+.ai-search-input::placeholder {
+  color: var(--text);
+}
+
+.ai-search-input:disabled {
+  opacity: 0.7;
+}
+
+.ai-search-btn {
+  padding: 0.55rem 1rem;
+  border: none;
+  border-radius: 0.375rem;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ai-search-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ai-clear-btn {
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ai-clear-btn:hover {
+  color: var(--text-h);
+  border-color: var(--text-h);
+}
+
 .toolbar {
   display: flex;
   gap: 0.75rem;
@@ -756,6 +917,10 @@ async function handleCreateUser() {
 
 .hardware-table th.active {
   color: var(--text-h);
+}
+
+.hardware-table th.disabled {
+  cursor: default;
 }
 
 .name-cell {
